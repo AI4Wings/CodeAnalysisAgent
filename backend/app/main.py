@@ -41,9 +41,17 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-# Initialize services
-github_service = GitHubService()
-analysis_service = AnalysisService()
+# Initialize services lazily to allow health checks without full initialization
+github_service = None
+analysis_service = None
+
+def init_services():
+    """Initialize GitHub and Analysis services if not already initialized."""
+    global github_service, analysis_service
+    if github_service is None:
+        github_service = GitHubService()
+    if analysis_service is None:
+        analysis_service = AnalysisService()
 
 # Request model for commit analysis
 
@@ -52,9 +60,8 @@ class CommitAnalysisRequest(BaseModel):
 
 @app.get("/healthz")
 async def healthz():
-    """Health check endpoint that also verifies database connection."""
+    """Health check endpoint that verifies database connection."""
     from app.db.database import check_db_connection
-    
     db_status = "ok" if check_db_connection() else "error"
     return {
         "status": "ok",
@@ -92,6 +99,9 @@ async def get_history_record(aid: str, db: Session = Depends(get_db)):
 async def reanalyze_history_record(aid: str, db: Session = Depends(get_db)):
     """Re-analyze a specific commit from history"""
     try:
+        # Initialize services if needed
+        init_services()
+        
         # Get existing record from database
         existing_record = db.query(HistoryRecordDB).filter(HistoryRecordDB.aid == aid).first()
         if not existing_record:
@@ -133,26 +143,21 @@ async def reanalyze_history_record(aid: str, db: Session = Depends(get_db)):
                 status_code=504,
                 detail="Analysis timed out. Please try again with a smaller commit."
             )
-    except Exception as e:
-        db.rollback()
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=str(e))
+        except Exception as e:
+            db.rollback()
+            if isinstance(e, HTTPException):
+                raise e
+            raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
-        
-    except asyncio.TimeoutError:
-        raise HTTPException(
-            status_code=504,
-            detail="Analysis timed out. Please try again with a smaller commit."
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/analyze")
 async def analyze_commit(request: CommitAnalysisRequest, db: Session = Depends(get_db)):
     """Analyze a commit and store results in database."""
     try:
+        # Initialize services if needed
+        init_services()
+        
         # Get commit changes from GitHub
         changes = github_service.get_commit_changes(request.commit_url)
         if not changes.get("files"):
