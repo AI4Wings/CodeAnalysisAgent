@@ -11,8 +11,11 @@ from datetime import datetime
 from app.services.github_service import GitHubService, GitHubError
 from app.services.analysis_service import AnalysisService, AnalysisError
 
-# Global storage for history records
-history_records: Dict[str, Dict[str, Any]] = {}
+# Import database dependencies
+from app.db.database import get_db
+from app.db.models import HistoryRecordDB
+from sqlalchemy.orm import Session
+from fastapi import Depends
 
 app = FastAPI(
     title="Code Analysis Agent API",
@@ -42,15 +45,7 @@ app.add_middleware(
 github_service = GitHubService()
 analysis_service = AnalysisService()
 
-class HistoryRecord(BaseModel):
-    """Model for storing analysis history records"""
-    aid: str
-    timestamp: str
-    repository: str
-    commit: str
-    analysisResult: Dict[str, Any]
-    status: str = "completed"
-    notes: Optional[str] = None
+# Request model for commit analysis
 
 class CommitAnalysisRequest(BaseModel):
     commit_url: str
@@ -60,54 +55,83 @@ async def healthz():
     return {"status": "ok"}
 
 @app.get("/api/history")
-async def list_history_records():
+async def list_history_records(db: Session = Depends(get_db)):
     """List all history records"""
-    return list(history_records.values())
+    try:
+        records = db.query(HistoryRecordDB).order_by(HistoryRecordDB.timestamp.desc()).all()
+        return [record.to_dict() for record in records]
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        db.close()
 
 @app.get("/api/history/{aid}")
-async def get_history_record(aid: str):
+async def get_history_record(aid: str, db: Session = Depends(get_db)):
     """Get a specific history record by aid"""
-    if aid not in history_records:
-        raise HTTPException(status_code=404, detail="History record not found")
-    return history_records[aid]
+    try:
+        record = db.query(HistoryRecordDB).filter(HistoryRecordDB.aid == aid).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="History record not found")
+        return record.to_dict()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        db.close()
 
 @app.post("/api/history/{aid}/reanalyze")
-async def reanalyze_history_record(aid: str):
+async def reanalyze_history_record(aid: str, db: Session = Depends(get_db)):
     """Re-analyze a specific commit from history"""
-    if aid not in history_records:
-        raise HTTPException(status_code=404, detail="History record not found")
-    
-    existing_record = history_records[aid]
-    
     try:
+        # Get existing record from database
+        existing_record = db.query(HistoryRecordDB).filter(HistoryRecordDB.aid == aid).first()
+        if not existing_record:
+            raise HTTPException(status_code=404, detail="History record not found")
+        
         # Get commit changes from GitHub
         changes = github_service.get_commit_changes(
-            f"https://github.com/{existing_record['repository']}/commit/{existing_record['commit']}"
+            f"https://github.com/{existing_record.repository}/commit/{existing_record.commit_hash}"
         )
         
         if not changes.get("files"):
             raise HTTPException(status_code=400, detail="No files found in commit")
         
-        # Re-analyze changes
-        analysis_results = await asyncio.wait_for(
-            analysis_service.analyze_changes(changes),
-            timeout=60.0
-        )
-        
-        # Create new history record for re-analysis
-        new_aid = str(uuid.uuid4())
-        new_record = HistoryRecord(
-            aid=new_aid,
-            timestamp=datetime.utcnow().isoformat(),
-            repository=existing_record["repository"],
-            commit=existing_record["commit"],
-            analysisResult=analysis_results,
-            status="completed",
-            notes=f"Re-analysis of {aid}"
-        )
-        
-        history_records[new_aid] = new_record.dict()
-        return new_record
+        try:
+            # Re-analyze changes with timeout
+            analysis_results = await asyncio.wait_for(
+                analysis_service.analyze_changes(changes),
+                timeout=60.0
+            )
+            
+            # Create new history record for re-analysis
+            new_aid = str(uuid.uuid4())
+            new_record = HistoryRecordDB(
+                aid=new_aid,
+                timestamp=datetime.utcnow(),
+                repository=existing_record.repository,
+                commit_hash=existing_record.commit_hash,
+                analysis_result=analysis_results,
+                status="completed",
+                notes=f"Re-analysis of {aid}"
+            )
+            
+            db.add(new_record)
+            db.commit()
+            return new_record.to_dict()
+        except asyncio.TimeoutError:
+            db.rollback()
+            raise HTTPException(
+                status_code=504,
+                detail="Analysis timed out. Please try again with a smaller commit."
+            )
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
         
     except asyncio.TimeoutError:
         raise HTTPException(
@@ -118,14 +142,14 @@ async def reanalyze_history_record(aid: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/analyze")
-async def analyze_commit(request: CommitAnalysisRequest):
+async def analyze_commit(request: CommitAnalysisRequest, db: Session = Depends(get_db)):
+    """Analyze a commit and store results in database."""
     try:
         # Get commit changes from GitHub
         changes = github_service.get_commit_changes(request.commit_url)
         if not changes.get("files"):
             raise HTTPException(status_code=400, detail="No files found in commit")
             
-        # Add timeout for analysis
         try:
             # Analyze changes using LangChain with timeout
             analysis_results = await asyncio.wait_for(
@@ -135,15 +159,18 @@ async def analyze_commit(request: CommitAnalysisRequest):
             
             # Create history record
             aid = str(uuid.uuid4())
-            history_record = HistoryRecord(
+            history_record = HistoryRecordDB(
                 aid=aid,
-                timestamp=datetime.utcnow().isoformat(),
+                timestamp=datetime.utcnow(),
                 repository=changes.get("repository", ""),
-                commit=changes.get("commit", ""),
-                analysisResult=analysis_results,
+                commit_hash=changes.get("commit", ""),
+                analysis_result=analysis_results,
                 status="completed"
             )
-            history_records[aid] = history_record.dict()
+            
+            # Save to database
+            db.add(history_record)
+            db.commit()
             
             # Return analysis results with aid
             return {
@@ -151,13 +178,21 @@ async def analyze_commit(request: CommitAnalysisRequest):
                 "aid": aid
             }
         except asyncio.TimeoutError:
+            db.rollback()
             raise HTTPException(
                 status_code=504,
                 detail="Analysis timed out. Please try again with a smaller commit."
             )
     except (ValueError, GitHubError) as e:
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
     except AnalysisError as e:
+        db.rollback()
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    finally:
+        db.close()
