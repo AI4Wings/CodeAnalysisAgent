@@ -72,28 +72,16 @@ async def healthz():
 @app.get("/api/history")
 async def list_history_records(db: Session = Depends(get_db)):
     """List all history records"""
-    try:
-        records = db.query(HistoryRecordDB).order_by(HistoryRecordDB.timestamp.desc()).all()
-        return [record.to_dict() for record in records]
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        db.close()
+    records = db.query(HistoryRecordDB).order_by(HistoryRecordDB.timestamp.desc()).all()
+    return [record.to_dict() for record in records]
 
 @app.get("/api/history/{aid}")
 async def get_history_record(aid: str, db: Session = Depends(get_db)):
     """Get a specific history record by aid"""
-    try:
-        record = db.query(HistoryRecordDB).filter(HistoryRecordDB.aid == aid).first()
-        if not record:
-            raise HTTPException(status_code=404, detail="History record not found")
-        return record.to_dict()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    finally:
-        db.close()
+    record = db.query(HistoryRecordDB).filter(HistoryRecordDB.aid == aid).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="History record not found")
+    return record.to_dict()
 
 @app.post("/api/history/{aid}/reanalyze")
 async def reanalyze_history_record(aid: str, db: Session = Depends(get_db)):
