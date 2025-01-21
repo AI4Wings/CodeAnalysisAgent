@@ -1,0 +1,18 @@
+app = "app-name"
+primary_region = "lax"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # Add your environment variables here
+  # GITHUB_TOKEN = "your_github_token_here"
+  # OPENAI_API_KEY = "your_openai_api_key_here"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
