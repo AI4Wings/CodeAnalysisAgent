@@ -52,7 +52,15 @@ class CommitAnalysisRequest(BaseModel):
 
 @app.get("/healthz")
 async def healthz():
-    return {"status": "ok"}
+    """Health check endpoint that also verifies database connection."""
+    from app.db.database import check_db_connection
+    
+    db_status = "ok" if check_db_connection() else "error"
+    return {
+        "status": "ok",
+        "database": db_status,
+        "timestamp": datetime.utcnow().isoformat()
+    }
 
 @app.get("/api/history")
 async def list_history_records(db: Session = Depends(get_db)):
