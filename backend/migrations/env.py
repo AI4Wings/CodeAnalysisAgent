@@ -6,7 +6,13 @@ from sqlalchemy import pool
 import os
 from dotenv import load_dotenv
 from alembic import context
-from app.db.models import Base
+import sys
+from pathlib import Path
+
+# Add the project root directory to Python path
+sys.path.append(str(Path(__file__).parent.parent))
+
+from app.db.models import Base, HistoryRecordDB  # Import the model explicitly
 from app.db.database import DATABASE_URL, MYSQL_USER, MYSQL_PASSWORD, MYSQL_HOST, MYSQL_PORT, MYSQL_DATABASE
 
 # Load environment variables
@@ -14,6 +20,8 @@ load_dotenv()
 
 # Override DATABASE_URL with environment variables
 DATABASE_URL = f"mysql+mysqlconnector://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DATABASE}"
+
+print("Initializing Alembic with database URL:", DATABASE_URL)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

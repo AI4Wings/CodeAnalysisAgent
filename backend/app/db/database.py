@@ -41,7 +41,6 @@ SessionLocal = sessionmaker(
     expire_on_commit=False
 )
 
-@contextmanager
 def get_db() -> Generator[Session, None, None]:
     """Get database session with automatic cleanup."""
     db = SessionLocal()
@@ -58,9 +57,13 @@ def init_db() -> None:
 def check_db_connection() -> bool:
     """Check if database connection is working."""
     try:
-        with get_db() as db:
-            db.execute("SELECT 1")
+        from sqlalchemy import text
+        db = SessionLocal()
+        try:
+            db.execute(text("SELECT 1"))
             return True
+        finally:
+            db.close()
     except Exception as e:
         print(f"Database connection error: {str(e)}")
         return False
